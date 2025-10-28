@@ -13,3 +13,4 @@ bin           = @["nodepad_ng"]
 requires "nim >= 2.2.4"
 
 requires "cligen >= 1.9.3"
+requires "chronicles >= 0.12.2"
