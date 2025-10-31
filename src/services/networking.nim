@@ -1,41 +1,58 @@
-import asyncdispatch, net, asynchttpserver, ws
-import chronicles
+# services/networking.nim
 
-proc wsCallback(req: Request) {.async, gcsafe.} =
-    # Scope peer list within callback to avoid gcsafe issues
-    var connections = newSeq[WebSocket]()
+import chronicles, asyncdispatch, net, asynchttpserver, ws
+
+type ServerState* = ref object
+  server*: AsyncHttpServer
+  connections*: seq[WebSocket]
+  future*: Future[void]
+
+proc startServer*(bindHost: string, bindPort: Port): Future[
+    ServerState] {.async.} =
+  # Use a closure pattern for gcsafe
+
+  var state = ServerState(
+    server: newAsyncHttpServer(),
+    connections: newSeq[WebSocket]()
+  )
+
+  proc wsCallback(req: Request) {.async, gcsafe.} =
     if req.url.path == "/sync":
-        info("DBG", dbg = req)
-        try:
-            var ws = await newWebSocket(req)
-            connections.add ws
+      info("DBG", dbg = req)
 
-            while ws.readyState == Open:
-                let packet = await ws.receiveStrPacket()
+      var ws: WebSocket = nil
 
-                info("WS string packet", wsStringPacket = packet)
+      try:
+        ws = await newWebSocket(req)
+        # Update connections list
+        state.connections.add ws
+        info("Peer connected!", peerWs = ws, peerCount = state.connections.len)
+        while ws.readyState == Open:
+          let packet = await ws.receiveStrPacket()
 
-                # Flooding + split horizon logic
-                for peer in connections:
-                    if peer != ws and peer.readyState == Open:
-                        asyncCheck peer.send(packet)
-        except WebSocketError, IOError:
-            warn("Socket closed!")
-        except Exception as e:
-            error("Unknown wsCallback error: ", errMsg = e.msg)
-        # finally:
-        #     if ws != nil and connections.contains(ws):
-        #         let idx = connections.find(ws)
-        #         if idx > -1:
-        #             connections.delete(idx)
-        #             info("Peer removed!", peerCount = connections.len)
+          info("WS string packet", peerWs = ws, wsStringPacket = packet)
+
+          # Flooding + split horizon logic
+          for peer in state.connections:
+            if peer != ws and peer.readyState == Open:
+              asyncCheck peer.send(packet)
+      except WebSocketError, IOError:
+        warn("Socket closed!")
+      except Exception as e:
+        error("Unknown wsCallback error: ", errMsg = e.msg)
+      finally:
+        if (ws != nil) and (state.connections.contains(ws)):
+          let idx = state.connections.find(ws)
+          if idx > -1:
+            state.connections.delete(idx)
+            info("Peer disconnected!", peerWsKey = ws.key,
+                peerCount = state.connections.len)
     else:
-        await req.respond(Http404, "NodePad route does not exist!")
-        warn("Unimplemented route accessed!", errRoute = req.url.path)
+      await req.respond(Http404, "NodePad route does not exist!")
+      warn("Unimplemented route accessed!", errRoute = req.url.path)
 
-proc startServer*(bindHost: string, bindPort: Port) {.async.} =
-    let server = newAsyncHttpServer()
+  info("Starting WS server....", bindHost = bindHost, bindPort = bindPort)
 
-    info("Starting WS server....", bindHost = bindHost, bindPort = bindPort)
+  state.future = state.server.serve(bindPort, wsCallback, bindHost)
 
-    await server.serve(bindPort, wsCallback, bindHost)
+  return state
