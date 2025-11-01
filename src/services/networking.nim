@@ -18,7 +18,6 @@ proc startServer*(bindHost: string, bindPort: Port): Future[
 
   proc wsCallback(req: Request) {.async, gcsafe.} =
     if req.url.path == "/sync":
-      info("DBG", dbg = req)
 
       var ws: WebSocket = nil
 
